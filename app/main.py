@@ -13,3 +13,9 @@ app.include_router(chat.router, prefix="/chat", tags=["chat"])
 @app.get("/")
 def root():
     return {"status": "działa"}
+
+@app.get("/test-notification")
+def test_notification():
+    from app.services.scheduler import send_daily_notification
+    send_daily_notification()
+    return {"status": "wysłano"}
