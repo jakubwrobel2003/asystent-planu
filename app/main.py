@@ -3,11 +3,15 @@ from app.database import engine, Base
 from app.routers import schedule, chat
 from app.routers.webhook import router as webhook_router
 from app.services.scheduler import start_scheduler
-
+import subprocess
+subprocess.run(["alembic", "upgrade", "head"], check=True)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Asystent Planu")
 
+
+from app.routers.admin import router as admin_router
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(webhook_router, tags=["webhook"])

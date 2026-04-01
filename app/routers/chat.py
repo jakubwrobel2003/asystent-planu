@@ -29,20 +29,24 @@ def get_schedule_context(db: Session) -> str:
         )
     return "\n".join(lines)
 
-def apply_action(action: dict, db):
+def apply_action(action: dict, db, schedule_id: int = None):
     if action["action"] == "cancel":
-        event = db.query(Event).filter(
+        query = db.query(Event).filter(
             Event.title.ilike(f"%{action['title']}%"),
             Event.day_of_week == action.get("day_of_week")
-        ).first()
+        )
+        if schedule_id:
+            query = query.filter(Event.schedule_id == schedule_id)
+        event = query.first()
         if event:
             event.is_cancelled = True
             db.commit()
 
     elif action["action"] == "update":
-        event = db.query(Event).filter(
-            Event.title.ilike(f"%{action['title']}%")
-        ).first()
+        query = db.query(Event).filter(Event.title.ilike(f"%{action['title']}%"))
+        if schedule_id:
+            query = query.filter(Event.schedule_id == schedule_id)
+        event = query.first()
         if event:
             if action.get("day_of_week"):
                 event.day_of_week = action["day_of_week"]
@@ -64,7 +68,8 @@ def apply_action(action: dict, db):
             time_start=action.get("time_start"),
             time_end=action.get("time_end"),
             location=action.get("location"),
-            notes=action.get("notes")
+            notes=action.get("notes"),
+            schedule_id=schedule_id
         )
         db.add(event)
         db.commit()
