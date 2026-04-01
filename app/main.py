@@ -1,3 +1,5 @@
+import threading
+
 from fastapi import FastAPI
 from app.database import engine, Base
 from app.routers import schedule, chat
@@ -14,7 +16,11 @@ app.include_router(webhook_router, tags=["webhook"])
 
 start_scheduler()
 
+def start_telegram():
+    from app.services.telegram_bot import run_bot
+    run_bot()
 
+threading.Thread(target=start_telegram, daemon=True).start()
 @app.get("/")
 def root():
     return {"status": "działa"}
