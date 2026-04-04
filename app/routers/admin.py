@@ -111,3 +111,104 @@ def get_lecturer(abbreviation: str, db: Session = Depends(get_db)):
     if not lecturer:
         raise HTTPException(status_code=404, detail="Prowadzący nie znaleziony")
     return lecturer
+
+@router.post("/schedules/{schedule_id}/import-ics")
+async def import_ics(schedule_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    import re
+    from datetime import datetime, timedelta
+
+    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Plan nie istnieje")
+
+    content = (await file.read()).decode('utf-8')
+    warsaw_offset = timedelta(hours=2)
+
+    SKROTY = {
+        'Gk': 'Grafika komputerowa',
+        'Iwpp GJ': 'Informatyka w procesach produkcyjnych',
+        'Iwpp PG': 'Informatyka w procesach produkcyjnych',
+        'Prir': 'Programowanie równoległe i rozproszone',
+        'Prir - AK': 'Programowanie równoległe i rozproszone - projekt AK',
+        'Ps': 'Programowanie systemowe',
+        'Smiw': 'Systemy mikroprocesorowe i wbudowane',
+        'Smiw w': 'Systemy mikroprocesorowe i wbudowane',
+        'Taiib': 'Tworzenie aplikacji internetowych i bazodanowych',
+        'Taiib - P': 'Tworzenie aplikacji internetowych i bazodanowych - projekt',
+        'Wtp': 'Współczesne techniki programowania',
+        'WPP': 'Wizualizacja procesów przemysłowych',
+        'WPP - GK': 'Wizualizacja procesów przemysłowych - projekt GK',
+        'IO': 'Inżynieria oprogramowania',
+    }
+
+    days_pl = {0: 'poniedziałek', 1: 'wtorek', 2: 'środa',
+               3: 'czwartek', 4: 'piątek', 5: 'sobota', 6: 'niedziela'}
+
+    blocks = content.split('BEGIN:VEVENT')[1:]
+    added = 0
+    skipped = 0
+
+    for block in blocks:
+        summary_match = re.search(r'SUMMARY:(.*?)(?:\r\n|\n)', block)
+        start_match = re.search(r'DTSTART:(\d{8}T\d{6}Z)', block)
+        end_match = re.search(r'DTEND:(\d{8}T\d{6}Z)', block)
+
+        if not (summary_match and start_match and end_match):
+            continue
+
+        summary = summary_match.group(1).strip()
+        if 'Wakacje' in summary or 'test zdalny' in summary.lower():
+            skipped += 1
+            continue
+
+        dt_start = datetime.strptime(start_match.group(1), '%Y%m%dT%H%M%SZ') + warsaw_offset
+        dt_end = datetime.strptime(end_match.group(1), '%Y%m%dT%H%M%SZ') + warsaw_offset
+
+        existing = db.query(Event).filter(
+            Event.schedule_id == schedule_id,
+            Event.date == dt_start.replace(hour=0, minute=0, second=0, microsecond=0),
+            Event.time_start == dt_start.strftime('%H:%M')
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        parts = summary.split()
+        type_idx = -1
+        for i, p in enumerate(parts):
+            if p in ['wyk', 'lab', 'proj', 'sem', 'w']:
+                type_idx = i
+                break
+
+        if type_idx >= 0:
+            skrot = ' '.join(parts[:type_idx])
+            rest = parts[type_idx+1:]
+        else:
+            skrot = summary
+            rest = []
+
+        prowadzacy = ''
+        sala_parts = rest
+        if rest and len(rest[0]) <= 5 and rest[0][0].isupper():
+            prowadzacy = rest[0]
+            sala_parts = rest[1:]
+
+        sala = ' '.join(sala_parts).strip()
+        przedmiot = SKROTY.get(skrot, skrot)
+
+        event = Event(
+            type="zajecia",
+            title=przedmiot,
+            date=dt_start.replace(hour=0, minute=0, second=0, microsecond=0),
+            day_of_week=days_pl[dt_start.weekday()],
+            time_start=dt_start.strftime('%H:%M'),
+            time_end=dt_end.strftime('%H:%M'),
+            location=sala,
+            lecturer=prowadzacy,
+            schedule_id=schedule_id
+        )
+        db.add(event)
+        added += 1
+
+    db.commit()
+    return {"added": added, "skipped": skipped}

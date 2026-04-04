@@ -28,6 +28,8 @@ def get_filtered_context(db, user, intent: dict) -> str:
     if not user.schedule_id:
         return "Brak przypisanego planu zajęć."
 
+    from datetime import datetime, date
+
     query = db.query(Event).filter(
         Event.schedule_id == user.schedule_id,
         Event.type == "zajecia",
@@ -35,33 +37,75 @@ def get_filtered_context(db, user, intent: dict) -> str:
     )
 
     intent_type = intent.get("type")
+    intent_date = intent.get("date")
     day = intent.get("day")
     subject = intent.get("subject")
+    lecturer = intent.get("lecturer")
 
     if intent_type == "day":
-        if day:
+        if intent_date:
+            try:
+                target_date = datetime.strptime(intent_date, '%Y-%m-%d').date()
+                query = query.filter(
+                    Event.date >= datetime(target_date.year, target_date.month, target_date.day),
+                    Event.date < datetime(target_date.year, target_date.month, target_date.day, 23, 59)
+                )
+            except ValueError:
+                if day:
+                    query = query.filter(Event.day_of_week == day)
+        elif day:
             query = query.filter(Event.day_of_week == day)
-        else:
-            tomorrow = (datetime.now().weekday() + 1) % 7
-            day_name = [k for k, v in DAYS_MAP.items() if v == tomorrow][0]
-            query = query.filter(Event.day_of_week == day_name)
+
+    elif intent_type == "week":
+        if intent_date:
+            try:
+                target_date = datetime.strptime(intent_date, '%Y-%m-%d').date()
+                week_start = datetime(target_date.year, target_date.month, target_date.day)
+                from datetime import timedelta
+                week_end = week_start + timedelta(days=7)
+                query = query.filter(Event.date >= week_start, Event.date < week_end)
+            except ValueError:
+                pass
+
     elif intent_type == "subject" and subject:
         query = query.filter(Event.title.ilike(f"%{subject}%"))
+
     elif intent_type == "lecturer":
-        lecturer = intent.get("lecturer")
         if lecturer:
             query = query.filter(Event.lecturer.ilike(f"%{lecturer}%"))
         if day:
             query = query.filter(Event.day_of_week == day)
-    events = query.order_by(Event.time_start).all()
+
+    elif intent_type == "lecturer_info":
+        lecturer_abbr = intent.get("lecturer")
+        if lecturer_abbr:
+            from app.models import Lecturer
+            lect = db.query(Lecturer).filter(
+                Lecturer.abbreviation.ilike(f"%{lecturer_abbr}%")
+            ).first()
+            if lect:
+                parts = [f"Prowadzący: {lect.abbreviation}"]
+                if lect.first_name or lect.last_name:
+                    parts.append(f"Imię i nazwisko: {lect.first_name} {lect.last_name}")
+                if lect.email:
+                    parts.append(f"Email: {lect.email}")
+                if lect.room:
+                    parts.append(f"Gabinet: {lect.room}")
+                if lect.office_hours:
+                    parts.append(f"Dyżury: {lect.office_hours}")
+                return "\n".join(parts)
+        return "Brak danych o prowadzącym."
+
+    events = query.order_by(Event.date, Event.time_start).all()
 
     if not events:
         return "Brak zajęć spełniających kryteria."
 
     lines = []
     for e in events:
+        date_str = e.date.strftime('%d.%m') if e.date else e.day_of_week
         lines.append(
-            f"{e.title} | {e.day_of_week} | {e.time_start}-{e.time_end} | {e.location} | {e.lecturer}"
+            f"{date_str} ({e.day_of_week}) | {e.title} | {e.time_start}-{e.time_end} | {e.location} | {e.lecturer}"
         )
     return "\n".join(lines)
 
