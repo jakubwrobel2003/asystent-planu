@@ -4,7 +4,9 @@ from app.database import get_db
 from app.models import Schedule, Event
 import openpyxl
 import io
-
+from app.models import Schedule, Event, Lecturer
+from pydantic import BaseModel
+from typing import Optional
 router = APIRouter()
 
 DAYS_MAP = {
@@ -66,3 +68,46 @@ def upload_schedule(schedule_id: int, file: UploadFile = File(...), db: Session 
 
     db.commit()
     return {"message": f"Dodano {added} zajęć do planu {schedule.name}"}
+
+
+class LecturerCreate(BaseModel):
+    abbreviation: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    room: Optional[str] = None
+    phone: Optional[str] = None
+    office_hours: Optional[str] = None
+
+
+@router.post("/lecturers")
+def create_lecturer(data: LecturerCreate, db: Session = Depends(get_db)):
+    existing = db.query(Lecturer).filter(
+        Lecturer.abbreviation == data.abbreviation
+    ).first()
+    if existing:
+        for key, value in data.model_dump(exclude_unset=True).items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
+    lecturer = Lecturer(**data.model_dump())
+    db.add(lecturer)
+    db.commit()
+    db.refresh(lecturer)
+    return lecturer
+
+
+@router.get("/lecturers")
+def list_lecturers(db: Session = Depends(get_db)):
+    return db.query(Lecturer).all()
+
+
+@router.get("/lecturers/{abbreviation}")
+def get_lecturer(abbreviation: str, db: Session = Depends(get_db)):
+    lecturer = db.query(Lecturer).filter(
+        Lecturer.abbreviation == abbreviation
+    ).first()
+    if not lecturer:
+        raise HTTPException(status_code=404, detail="Prowadzący nie znaleziony")
+    return lecturer

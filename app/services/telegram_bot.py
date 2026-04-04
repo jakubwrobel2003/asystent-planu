@@ -1,11 +1,17 @@
 import os
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from app.database import SessionLocal
 from app.models import User, Schedule, Event
-from app.services.claude import ask_claude
+from app.services.claude import ask_claude, classify_intent
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+DAYS_MAP = {
+    "poniedziałek": 0, "wtorek": 1, "środa": 2,
+    "czwartek": 3, "piątek": 4, "sobota": 5, "niedziela": 6
+}
 
 
 def get_or_create_user(db, telegram_chat_id: str) -> User:
@@ -18,18 +24,39 @@ def get_or_create_user(db, telegram_chat_id: str) -> User:
     return user
 
 
-def get_schedule_context_for_user(db, user: User) -> str:
+def get_filtered_context(db, user, intent: dict) -> str:
     if not user.schedule_id:
         return "Brak przypisanego planu zajęć."
 
-    events = db.query(Event).filter(
+    query = db.query(Event).filter(
         Event.schedule_id == user.schedule_id,
         Event.type == "zajecia",
         Event.is_cancelled == False
-    ).all()
+    )
+
+    intent_type = intent.get("type")
+    day = intent.get("day")
+    subject = intent.get("subject")
+
+    if intent_type == "day":
+        if day:
+            query = query.filter(Event.day_of_week == day)
+        else:
+            tomorrow = (datetime.now().weekday() + 1) % 7
+            day_name = [k for k, v in DAYS_MAP.items() if v == tomorrow][0]
+            query = query.filter(Event.day_of_week == day_name)
+    elif intent_type == "subject" and subject:
+        query = query.filter(Event.title.ilike(f"%{subject}%"))
+    elif intent_type == "lecturer":
+        lecturer = intent.get("lecturer")
+        if lecturer:
+            query = query.filter(Event.lecturer.ilike(f"%{lecturer}%"))
+        if day:
+            query = query.filter(Event.day_of_week == day)
+    events = query.order_by(Event.time_start).all()
 
     if not events:
-        return "Brak zajęć w planie."
+        return "Brak zajęć spełniających kryteria."
 
     lines = []
     for e in events:
@@ -43,7 +70,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = SessionLocal()
     try:
         chat_id = str(update.message.chat_id)
-        user = get_or_create_user(db, chat_id)
+        get_or_create_user(db, chat_id)
 
         schedules = db.query(Schedule).all()
         if not schedules:
@@ -75,7 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if schedule:
                     user.schedule_id = schedule.id
                     db.commit()
-                    await update.message.reply_text(f"Przypisano plan: {schedule.name}. Możesz teraz pytać o zajęcia.")
+                    await update.message.reply_text(f"Przypisano plan: {schedule.name}.")
                     return
                 else:
                     await update.message.reply_text("Nie znaleziono planu o tym numerze.")
@@ -84,13 +111,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if schedules:
                 schedule_list = "\n".join([f"{s.id}. {s.name}" for s in schedules])
                 await update.message.reply_text(
-                    f"Najpierw wybierz plan zajęć wpisując jego numer:\n\n{schedule_list}"
+                    f"Wybierz plan zajęć wpisując jego numer:\n\n{schedule_list}"
                 )
             else:
-                await update.message.reply_text("Brak planów w systemie. Skontaktuj się z administratorem.")
+                await update.message.reply_text("Brak planów w systemie.")
             return
 
-        schedule_context = get_schedule_context_for_user(db, user)
+        await update.message.reply_text("Sprawdzam plan...")
+        await context.bot.send_chat_action(
+            chat_id=update.message.chat_id,
+            action="typing"
+        )
+
+        intent = classify_intent(message)
+        schedule_context = get_filtered_context(db, user, intent)
         result = ask_claude(message, schedule_context)
 
         if result["action"]:

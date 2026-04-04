@@ -77,3 +77,46 @@ def ask_claude(message: str, schedule_context: str = "") -> dict:
             pass
 
     return result
+
+def classify_intent(message: str) -> dict:
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=200,
+        system="""Klasyfikujesz zapytania dotyczące planu zajęć.
+Zwróć TYLKO JSON bez żadnego tekstu przed ani po:
+{
+  "type": "day|week|subject|change|other",
+  "day": "poniedziałek|wtorek|środa|czwartek|piątek|null",
+  "subject": "nazwa przedmiotu lub null",
+  "week_offset": 0
+}
+
+type:
+- day = pyta o konkretny dzień (dziś, jutro, pojutrze, konkretny dzień tygodnia)
+- week = pyta o cały tydzień
+- subject = pyta o konkretny przedmiot
+- change = zgłasza zmianę w planie
+- lecturer = pyta o prowadzącego
+- other = inne
+- lecturer_info = pyta o dane kontaktowe prowadzącego (email, gabinet, dyżury)
+
+day: dzień tygodnia którego dotyczy zapytanie lub null
+week_offset: 0=bieżący tydzień, 1=następny tydzień, -1=poprzedni
+
+Przykłady:
+"co mam jutro" -> {"type":"day","day":null,"subject":null,"week_offset":0}
+"co mam w przyszły poniedziałek" -> {"type":"day","day":"poniedziałek","subject":null,"week_offset":1}
+"pokaż plan na ten tydzień" -> {"type":"week","day":null,"subject":null,"week_offset":0}
+"kiedy mam IO" -> {"type":"subject","day":null,"subject":"IO","week_offset":0}
+"grafika przeniesiona na piątek" -> {"type":"change","day":"piątek","subject":"grafika","week_offset":0}
+"gdzie jest gabinet KaGa" -> {"type":"lecturer_info","day":null,"subject":null,"lecturer":"KaG","week_offset":0}
+"email do MaS" -> {"type":"lecturer_info","day":null,"subject":null,"lecturer":"MaS","week_offset":0}
+""",
+        messages=[{"role": "user", "content": message}]
+    )
+    import json
+    text = response.content[0].text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"type": "other", "day": None, "subject": None, "week_offset": 0}
