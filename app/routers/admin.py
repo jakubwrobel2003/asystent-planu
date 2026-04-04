@@ -32,6 +32,8 @@ def list_schedules(db: Session = Depends(get_db)):
 
 @router.post("/schedules/{schedule_id}/upload")
 def upload_schedule(schedule_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from datetime import datetime
+
     schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Plan nie istnieje")
@@ -43,6 +45,9 @@ def upload_schedule(schedule_id: int, file: UploadFile = File(...), db: Session 
     wb = openpyxl.load_workbook(io.BytesIO(contents))
     ws = wb.active
 
+    headers = [cell.value for cell in ws[1]]
+    has_date = 'Data' in headers
+
     db.query(Event).filter(
         Event.schedule_id == schedule_id,
         Event.type == "zajecia"
@@ -52,15 +57,33 @@ def upload_schedule(schedule_id: int, file: UploadFile = File(...), db: Session 
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row[0]:
             continue
+
+        if has_date:
+            przedmiot, dzien, data, od, do_, sala, prowadzacy, uwagi = (list(row) + [None] * 8)[:8]
+        else:
+            przedmiot, dzien, od, do_, sala, prowadzacy, uwagi = (list(row) + [None] * 7)[:7]
+            data = None
+
+        date_obj = None
+        if data:
+            if isinstance(data, str):
+                try:
+                    date_obj = datetime.strptime(data, '%Y-%m-%d')
+                except ValueError:
+                    pass
+            elif hasattr(data, 'year'):
+                date_obj = datetime(data.year, data.month, data.day)
+
         event = Event(
             type="zajecia",
-            title=row[0],
-            day_of_week=row[1].lower().strip() if row[1] else None,
-            time_start=str(row[2]) if row[2] else None,
-            time_end=str(row[3]) if row[3] else None,
-            location=row[4] if row[4] else None,
-            lecturer=row[5] if row[5] else None,
-            notes=row[6] if row[6] else None,
+            title=str(przedmiot) if przedmiot else None,
+            day_of_week=str(dzien).lower().strip() if dzien else None,
+            date=date_obj,
+            time_start=str(od) if od else None,
+            time_end=str(do_) if do_ else None,
+            location=str(sala) if sala else None,
+            lecturer=str(prowadzacy) if prowadzacy else None,
+            notes=str(uwagi) if uwagi else None,
             schedule_id=schedule_id
         )
         db.add(event)
@@ -68,7 +91,6 @@ def upload_schedule(schedule_id: int, file: UploadFile = File(...), db: Session 
 
     db.commit()
     return {"message": f"Dodano {added} zajęć do planu {schedule.name}"}
-
 
 class LecturerCreate(BaseModel):
     abbreviation: str
