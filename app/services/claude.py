@@ -80,36 +80,46 @@ def ask_claude(message: str, schedule_context: str = "") -> dict:
 
 
 def classify_intent(message: str) -> dict:
-    from datetime import datetime
-    today = datetime.now().strftime('%Y-%m-%d')
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
+
+    # Oblicz najbliższe dni tygodnia
+    days_offset = {'poniedziałek': 0, 'wtorek': 1, 'środa': 2,
+                   'czwartek': 3, 'piątek': 4, 'sobota': 5, 'niedziela': 6}
+
+    next_days = {}
+    for day_name, day_num in days_offset.items():
+        days_ahead = day_num - today.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        next_days[day_name] = (today + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=f"""Klasyfikujesz zapytania dotyczące planu zajęć.
-Dzisiaj jest {today}.
-Zwróć TYLKO JSON bez żadnego tekstu przed ani po:
+Dzisiaj jest {today.strftime('%Y-%m-%d')} ({['poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota', 'niedziela'][today.weekday()]}).
+Jutro: {tomorrow.strftime('%Y-%m-%d')}
+Najbliższe dni: {next_days}
+
+Zwróć TYLKO JSON:
 {{
   "type": "day|week|subject|lecturer|lecturer_info|change|other",
   "date": "YYYY-MM-DD lub null",
-  "day": "poniedziałek|wtorek|środa|czwartek|piątek|null",
+  "day": "nazwa dnia lub null",
   "subject": "nazwa przedmiotu lub null",
-  "lecturer": "skrót prowadzącego lub null",
+  "lecturer": "skrót lub null",
   "week_offset": 0
 }}
 
-Dla zapytań o konkretny dzień oblicz dokładną datę:
-- "jutro" = jutrzejsza data
-- "pojutrze" = data za 2 dni
-- "następny poniedziałek" = data najbliższego poniedziałku
-- "w środę" = data najbliższej środy
-- "dziś" = dzisiejsza data
-
-Przykłady:
-"co mam jutro" -> {{"type":"day","date":"JUTRZEJSZA_DATA","day":null,"subject":null,"lecturer":null,"week_offset":0}}
-"co mam w następny poniedziałek" -> {{"type":"day","date":"DATA_NAJBLIZSZEGO_PONIEDZIALKU","day":"poniedziałek","subject":null,"lecturer":null,"week_offset":1}}
-"kiedy mam IO" -> {{"type":"subject","date":null,"day":null,"subject":"IO","lecturer":null,"week_offset":0}}
-"grafika przeniesiona na piątek" -> {{"type":"change","date":null,"day":"piątek","subject":"grafika","lecturer":null,"week_offset":0}}
+Przykłady przy dzisiejszej dacie:
+"co mam jutro" -> {{"type":"day","date":"{tomorrow.strftime('%Y-%m-%d')}","day":null,"subject":null,"lecturer":null,"week_offset":0}}
+"co mam w następny poniedziałek" -> {{"type":"day","date":"{next_days['poniedziałek']}","day":"poniedziałek","subject":null,"lecturer":null,"week_offset":1}}
+"co mam w środę" -> {{"type":"day","date":"{next_days['środa']}","day":"środa","subject":null,"lecturer":null,"week_offset":0}}
+"plan na ten tydzień" -> {{"type":"week","date":"{today.strftime('%Y-%m-%d')}","day":null,"subject":null,"lecturer":null,"week_offset":0}}
 """,
         messages=[{"role": "user", "content": message}]
     )

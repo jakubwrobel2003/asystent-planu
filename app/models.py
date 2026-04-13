@@ -1,7 +1,21 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from app.database import Base
 from datetime import datetime
+
+import enum
+
+class EventType(str, enum.Enum):
+    zajecia = "zajecia"
+    wyklad = "wykład"
+    cwiczenia = "ćwiczenia"
+    projekt = "projekt"
+    laboratorium = "laboratorium"
+    egzamin = "egzamin"
+    online = "online"
+    inne = "inne"
+
+
 
 class Lecturer(Base):
     __tablename__ = "lecturers"
@@ -48,7 +62,7 @@ class Event(Base):
     __tablename__ = "events"
 
     id = Column(Integer, primary_key=True, index=True)
-    type = Column(String, nullable=False)
+    type = Column(Enum(EventType), nullable=False, default=EventType.zajecia)
     title = Column(String, nullable=False)
     day_of_week = Column(String, nullable=True)
     date = Column(DateTime, nullable=True)
@@ -64,3 +78,4 @@ class Event(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=True)
     schedule = relationship("Schedule", back_populates="events")
+

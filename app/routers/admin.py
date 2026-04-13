@@ -219,7 +219,7 @@ async def import_ics(schedule_id: int, file: UploadFile = File(...), db: Session
         przedmiot = SKROTY.get(skrot, skrot)
 
         event = Event(
-            type="zajecia",
+            type=detect_type(summary),
             title=przedmiot,
             date=dt_start.replace(hour=0, minute=0, second=0, microsecond=0),
             day_of_week=days_pl[dt_start.weekday()],
@@ -234,3 +234,21 @@ async def import_ics(schedule_id: int, file: UploadFile = File(...), db: Session
 
     db.commit()
     return {"added": added, "skipped": skipped}
+
+
+def detect_type(summary: str) -> str:
+    summary_lower = summary.lower()
+    if 'egzamin' in summary_lower or 'test' in summary_lower:
+        return 'egzamin'
+    elif 'proj' in summary_lower:
+        return 'projekt'
+    elif 'wyk' in summary_lower:
+        return 'wykład'
+    elif 'lab' in summary_lower:
+        return 'laboratorium'
+    elif 'online' in summary_lower or 'zdaln' in summary_lower:
+        return 'online'
+    elif 'cwicz' in summary_lower or 'ćwicz' in summary_lower:
+        return 'ćwiczenia'
+    else:
+        return 'zajecia'
