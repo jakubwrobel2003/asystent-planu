@@ -1,16 +1,17 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+
 from app.database import SessionLocal
-from app.models import User, Schedule, Event
+from app.models import User, Schedule, Event, Lecturer, EventType
 from app.services.claude import ask_claude, classify_intent
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 DAYS_MAP = {
     "poniedziałek": 0, "wtorek": 1, "środa": 2,
-    "czwartek": 3, "piątek": 4, "sobota": 5, "niedziela": 6
+    "czwartek": 3, "piątek": 4, "sobota": 5, "niedziela": 6,
 }
 
 
@@ -24,16 +25,14 @@ def get_or_create_user(db, telegram_chat_id: str) -> User:
     return user
 
 
-def get_filtered_context(db, user, intent: dict) -> str:
+def get_filtered_context(db, user: User, intent: dict) -> str:
     if not user.schedule_id:
         return "Brak przypisanego planu zajęć."
 
-    from datetime import datetime, date
-
     query = db.query(Event).filter(
         Event.schedule_id == user.schedule_id,
-        Event.type == "zajecia",
-        Event.is_cancelled == False
+        Event.type == EventType.zajecia,
+        Event.is_cancelled == False,  # noqa: E712
     )
 
     intent_type = intent.get("type")
@@ -42,14 +41,31 @@ def get_filtered_context(db, user, intent: dict) -> str:
     subject = intent.get("subject")
     lecturer = intent.get("lecturer")
 
+    if intent_type == "lecturer_info":
+        if lecturer:
+            lect = db.query(Lecturer).filter(
+                Lecturer.abbreviation.ilike(f"%{lecturer}%")
+            ).first()
+            if lect:
+                parts = [f"Prowadzący: {lect.abbreviation}"]
+                if lect.first_name or lect.last_name:
+                    parts.append(f"Imię i nazwisko: {lect.first_name or ''} {lect.last_name or ''}".strip())
+                if lect.email:
+                    parts.append(f"Email: {lect.email}")
+                if lect.room:
+                    parts.append(f"Gabinet: {lect.room}")
+                if lect.office_hours:
+                    parts.append(f"Dyżury: {lect.office_hours}")
+                return "\n".join(parts)
+        return "Brak danych o prowadzącym."
+
     if intent_type == "day":
         if intent_date:
             try:
-                target_date = datetime.strptime(intent_date, '%Y-%m-%d').date()
-                query = query.filter(
-                    Event.date >= datetime(target_date.year, target_date.month, target_date.day),
-                    Event.date < datetime(target_date.year, target_date.month, target_date.day, 23, 59)
-                )
+                target = datetime.strptime(intent_date, "%Y-%m-%d").date()
+                start = datetime(target.year, target.month, target.day)
+                end = start + timedelta(days=1)
+                query = query.filter(Event.date >= start, Event.date < end)
             except ValueError:
                 if day:
                     query = query.filter(Event.day_of_week == day)
@@ -59,9 +75,8 @@ def get_filtered_context(db, user, intent: dict) -> str:
     elif intent_type == "week":
         if intent_date:
             try:
-                target_date = datetime.strptime(intent_date, '%Y-%m-%d').date()
-                week_start = datetime(target_date.year, target_date.month, target_date.day)
-                from datetime import timedelta
+                target = datetime.strptime(intent_date, "%Y-%m-%d").date()
+                week_start = datetime(target.year, target.month, target.day)
                 week_end = week_start + timedelta(days=7)
                 query = query.filter(Event.date >= week_start, Event.date < week_end)
             except ValueError:
@@ -76,36 +91,15 @@ def get_filtered_context(db, user, intent: dict) -> str:
         if day:
             query = query.filter(Event.day_of_week == day)
 
-    elif intent_type == "lecturer_info":
-        lecturer_abbr = intent.get("lecturer")
-        if lecturer_abbr:
-            from app.models import Lecturer
-            lect = db.query(Lecturer).filter(
-                Lecturer.abbreviation.ilike(f"%{lecturer_abbr}%")
-            ).first()
-            if lect:
-                parts = [f"Prowadzący: {lect.abbreviation}"]
-                if lect.first_name or lect.last_name:
-                    parts.append(f"Imię i nazwisko: {lect.first_name} {lect.last_name}")
-                if lect.email:
-                    parts.append(f"Email: {lect.email}")
-                if lect.room:
-                    parts.append(f"Gabinet: {lect.room}")
-                if lect.office_hours:
-                    parts.append(f"Dyżury: {lect.office_hours}")
-                return "\n".join(parts)
-        return "Brak danych o prowadzącym."
-
     events = query.order_by(Event.date, Event.time_start).all()
-
     if not events:
         return "Brak zajęć spełniających kryteria."
 
     lines = []
     for e in events:
-        date_str = e.date.strftime('%d.%m') if e.date else e.day_of_week
+        date_str = e.date.strftime("%d.%m") if e.date else (e.day_of_week or "-")
         lines.append(
-            f"{date_str} ({e.day_of_week}) | {e.title} | {e.time_start}-{e.time_end} | {e.location} | {e.lecturer}"
+            f"{date_str} ({e.day_of_week or '-'}) | {e.title} | {e.time_start}-{e.time_end} | {e.location} | {e.lecturer}"
         )
     return "\n".join(lines)
 
@@ -136,21 +130,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = SessionLocal()
     try:
         chat_id = str(update.message.chat_id)
-        message = update.message.text
+        message = update.message.text or ""
         user = get_or_create_user(db, chat_id)
 
         if not user.schedule_id:
             schedules = db.query(Schedule).all()
-            if message.isdigit():
-                schedule = db.query(Schedule).filter(Schedule.id == int(message)).first()
+            if message.strip().isdigit():
+                schedule = db.query(Schedule).filter(Schedule.id == int(message.strip())).first()
                 if schedule:
                     user.schedule_id = schedule.id
                     db.commit()
                     await update.message.reply_text(f"Przypisano plan: {schedule.name}.")
                     return
-                else:
-                    await update.message.reply_text("Nie znaleziono planu o tym numerze.")
-                    return
+                await update.message.reply_text("Nie znaleziono planu o tym numerze.")
+                return
 
             if schedules:
                 schedule_list = "\n".join([f"{s.id}. {s.name}" for s in schedules])
@@ -161,17 +154,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Brak planów w systemie.")
             return
 
-        await update.message.reply_text("Sprawdzam plan...")
         await context.bot.send_chat_action(
             chat_id=update.message.chat_id,
-            action="typing"
+            action="typing",
         )
 
         intent = classify_intent(message)
         schedule_context = get_filtered_context(db, user, intent)
         result = ask_claude(message, schedule_context)
 
-        if result["action"]:
+        if result.get("action"):
             from app.routers.chat import apply_action
             apply_action(result["action"], db, user.schedule_id)
 
@@ -181,6 +173,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def create_app():
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Brak TELEGRAM_BOT_TOKEN w środowisku")
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

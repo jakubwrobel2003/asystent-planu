@@ -1,24 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from typing import Optional
+
 from app.database import get_db
-from app.models import Event
+from app.models import Event, Schedule, EventType
 from app.services.claude import ask_claude
-import json
 
 router = APIRouter()
 
 
 class ChatMessage(BaseModel):
     message: str
+    schedule_id: Optional[int] = None
 
 
-def get_schedule_context(db: Session) -> str:
-    events = db.query(Event).filter(
-        Event.type == "zajecia",
-        Event.is_cancelled == False
-    ).all()
+def get_schedule_context(db: Session, schedule_id: Optional[int] = None) -> str:
+    query = db.query(Event).filter(
+        Event.type == EventType.zajecia,
+        Event.is_cancelled == False,  # noqa: E712
+    )
+    if schedule_id:
+        query = query.filter(Event.schedule_id == schedule_id)
 
+    events = query.all()
     if not events:
         return "Brak zajęć w bazie."
 
@@ -29,95 +34,82 @@ def get_schedule_context(db: Session) -> str:
         )
     return "\n".join(lines)
 
-def apply_action(action: dict, db, schedule_id: int = None):
-    if action["action"] == "cancel":
-        query = db.query(Event).filter(
-            Event.title.ilike(f"%{action['title']}%"),
-            Event.day_of_week == action.get("day_of_week")
-        )
+
+def apply_action(action: dict, db: Session, schedule_id: Optional[int] = None) -> Optional[str]:
+    """
+    Wykonuje akcję zwróconą przez Claude. Zwraca krótki komunikat o tym co się stało
+    albo None, jeśli nie znaleziono pasującego eventu.
+    """
+    act = action.get("action")
+    title = action.get("title")
+
+    if act == "cancel":
+        query = db.query(Event).filter(Event.title.ilike(f"%{title}%"))
         if schedule_id:
             query = query.filter(Event.schedule_id == schedule_id)
+        if action.get("day_of_week"):
+            query = query.filter(Event.day_of_week == action["day_of_week"])
         event = query.first()
-        if event:
-            event.is_cancelled = True
-            db.commit()
+        if not event:
+            return None
+        event.is_cancelled = True
+        db.commit()
+        return f"Odwołano: {event.title} ({event.day_of_week or '-'})"
 
-    elif action["action"] == "update":
-        query = db.query(Event).filter(Event.title.ilike(f"%{action['title']}%"))
+    if act == "update":
+        query = db.query(Event).filter(Event.title.ilike(f"%{title}%"))
         if schedule_id:
             query = query.filter(Event.schedule_id == schedule_id)
+        if action.get("day_of_week") and not any(
+            k in action for k in ("time_start", "time_end", "location", "notes")
+        ):
+            # jeżeli jedyną zmianą ma być dzień, nie filtruj po starym dniu
+            pass
         event = query.first()
-        if event:
-            if action.get("day_of_week"):
-                event.day_of_week = action["day_of_week"]
-            if action.get("time_start"):
-                event.time_start = action["time_start"]
-            if action.get("time_end"):
-                event.time_end = action["time_end"]
-            if action.get("location"):
-                event.location = action["location"]
-            if action.get("notes"):
-                event.notes = action["notes"]
-            db.commit()
+        if not event:
+            return None
 
-    elif action["action"] == "add":
+        for field in ("day_of_week", "time_start", "time_end", "location", "notes"):
+            if action.get(field):
+                setattr(event, field, action[field])
+        db.commit()
+        return f"Zaktualizowano: {event.title}"
+
+    if act == "add":
         event = Event(
-            type="zajecia",
-            title=action["title"],
+            type=EventType.zajecia,
+            title=title,
             day_of_week=action.get("day_of_week"),
             time_start=action.get("time_start"),
             time_end=action.get("time_end"),
             location=action.get("location"),
             notes=action.get("notes"),
-            schedule_id=schedule_id
+            schedule_id=schedule_id,
         )
         db.add(event)
         db.commit()
+        return f"Dodano: {title}"
+
+    return None
+
+
 @router.post("/")
 def chat(msg: ChatMessage, db: Session = Depends(get_db)):
-    context = get_schedule_context(db)
+    # Jeśli podano schedule_id, zwaliduj
+    if msg.schedule_id:
+        schedule = db.query(Schedule).filter(Schedule.id == msg.schedule_id).first()
+        if not schedule:
+            raise HTTPException(status_code=404, detail="Plan nie istnieje")
+
+    context = get_schedule_context(db, msg.schedule_id)
     result = ask_claude(msg.message, context)
 
-    if result["action"]:
-        action = result["action"]
+    applied = None
+    if result.get("action"):
+        applied = apply_action(result["action"], db, msg.schedule_id)
 
-        if action["action"] == "cancel":
-            event = db.query(Event).filter(
-                Event.title.ilike(f"%{action['title']}%"),
-                Event.day_of_week == action.get("day_of_week")
-            ).first()
-            if event:
-                event.is_cancelled = True
-                db.commit()
-
-        elif action["action"] == "update":
-            event = db.query(Event).filter(
-                Event.title.ilike(f"%{action['title']}%")
-            ).first()
-            if event:
-                if action.get("day_of_week"):
-                    event.day_of_week = action["day_of_week"]
-                if action.get("time_start"):
-                    event.time_start = action["time_start"]
-                if action.get("time_end"):
-                    event.time_end = action["time_end"]
-                if action.get("location"):
-                    event.location = action["location"]
-                if action.get("notes"):
-                    event.notes = action["notes"]
-                db.commit()
-
-        elif action["action"] == "add":
-            event = Event(
-                type="zajecia",
-                title=action["title"],
-                day_of_week=action.get("day_of_week"),
-                time_start=action.get("time_start"),
-                time_end=action.get("time_end"),
-                location=action.get("location"),
-                notes=action.get("notes")
-            )
-            db.add(event)
-            db.commit()
-
-    return {"response": result["text"]}
+    return {
+        "response": result["text"],
+        "applied": applied,
+        "action": result.get("action"),
+    }

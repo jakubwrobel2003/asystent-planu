@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime, timedelta
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -9,13 +11,13 @@ client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 SYSTEM_PROMPT = """Jesteś asystentem studenta który zarządza planem zajęć.
 
 ZASADY ODPOWIEDZI:
-- Nazywasz się JARVIS taka jest z IRON MANA
+- Nazywasz się JARVIS, tak jak z IRON MANA
 - Odpowiadaj krótko i konkretnie, tylko fakty
 - Bez emoji, bez zachęt do dalszej rozmowy, bez "Czy mogę pomóc w czymś jeszcze?"
 - Bez pogrubień markdown, bez tabel — zwykły tekst
 - Jeśli pytanie dotyczy planu, podaj tylko: przedmiot, godzina, sala, prowadzący
 - Jeśli zgłaszasz zmianę, potwierdź jednym zdaniem co zostało zmienione
-- Odpowiadaj na pytania tylko związane z planem zajęć nic innego nie wciągaj się w dyskusje
+- Odpowiadaj na pytania tylko związane z planem zajęć, nie wciągaj się w inne dyskusje
 
 OBSŁUGA ZMIAN W PLANIE:
 Gdy użytkownik zgłasza zmianę, wyciągnij strukturę JSON z polami:
@@ -41,6 +43,22 @@ Odpowiedź: "Zaktualizowano: Grafika przeniesiona na piątek 10:00.
 """
 
 
+def _extract_action(text: str) -> tuple[str, dict | None]:
+    if "<json>" not in text or "</json>" not in text:
+        return text, None
+
+    before = text.split("<json>")[0].strip()
+    json_str = text.split("<json>")[1].split("</json>")[0].strip()
+    after = text.split("</json>")[-1].strip()
+    clean_text = (before + " " + after).strip()
+
+    try:
+        action = json.loads(json_str)
+    except json.JSONDecodeError:
+        action = None
+    return clean_text, action
+
+
 def ask_claude(message: str, schedule_context: str = "") -> dict:
     full_message = message
     if schedule_context:
@@ -50,58 +68,38 @@ def ask_claude(message: str, schedule_context: str = "") -> dict:
         model="claude-opus-4-5",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": full_message}]
+        messages=[{"role": "user", "content": full_message}],
     )
 
     text = response.content[0].text
-
-    result = {"text": text, "action": None}
-
-    if "<json>" in text and "</json>" in text:
-        json_str = text.split("<json>")[1].split("</json>")[0].strip()
-        clean_text = text.split("<json>")[0].strip()
-        after = text.split("</json>")[-1].strip()
-        result["text"] = (clean_text + "\n" + after).strip()
-        import json
-        try:
-            result["action"] = json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
-
-    if "<json>" in text and "</json>" in text:
-        json_str = text.split("<json>")[1].split("</json>")[0].strip()
-        import json
-        try:
-            result["action"] = json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
-
-    return result
+    clean_text, action = _extract_action(text)
+    return {"text": clean_text, "action": action}
 
 
 def classify_intent(message: str) -> dict:
-    from datetime import datetime, timedelta
-
     now = datetime.now()
     today = now.date()
     tomorrow = today + timedelta(days=1)
 
-    # Oblicz najbliższe dni tygodnia
-    days_offset = {'poniedziałek': 0, 'wtorek': 1, 'środa': 2,
-                   'czwartek': 3, 'piątek': 4, 'sobota': 5, 'niedziela': 6}
+    days_offset = {
+        "poniedziałek": 0, "wtorek": 1, "środa": 2,
+        "czwartek": 3, "piątek": 4, "sobota": 5, "niedziela": 6,
+    }
 
     next_days = {}
     for day_name, day_num in days_offset.items():
         days_ahead = day_num - today.weekday()
         if days_ahead <= 0:
             days_ahead += 7
-        next_days[day_name] = (today + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
+        next_days[day_name] = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    day_labels = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=f"""Klasyfikujesz zapytania dotyczące planu zajęć.
-Dzisiaj jest {today.strftime('%Y-%m-%d')} ({['poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota', 'niedziela'][today.weekday()]}).
+Dzisiaj jest {today.strftime('%Y-%m-%d')} ({day_labels[today.weekday()]}).
 Jutro: {tomorrow.strftime('%Y-%m-%d')}
 Najbliższe dni: {next_days}
 
@@ -115,15 +113,15 @@ Zwróć TYLKO JSON:
   "week_offset": 0
 }}
 
-Przykłady przy dzisiejszej dacie:
+Przykłady:
 "co mam jutro" -> {{"type":"day","date":"{tomorrow.strftime('%Y-%m-%d')}","day":null,"subject":null,"lecturer":null,"week_offset":0}}
 "co mam w następny poniedziałek" -> {{"type":"day","date":"{next_days['poniedziałek']}","day":"poniedziałek","subject":null,"lecturer":null,"week_offset":1}}
 "co mam w środę" -> {{"type":"day","date":"{next_days['środa']}","day":"środa","subject":null,"lecturer":null,"week_offset":0}}
 "plan na ten tydzień" -> {{"type":"week","date":"{today.strftime('%Y-%m-%d')}","day":null,"subject":null,"lecturer":null,"week_offset":0}}
 """,
-        messages=[{"role": "user", "content": message}]
+        messages=[{"role": "user", "content": message}],
     )
-    import json
+
     text = response.content[0].text.strip()
     try:
         return json.loads(text)

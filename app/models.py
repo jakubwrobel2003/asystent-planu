@@ -5,6 +5,7 @@ from datetime import datetime
 
 import enum
 
+
 class EventType(str, enum.Enum):
     zajecia = "zajecia"
     wyklad = "wykład"
@@ -16,27 +17,27 @@ class EventType(str, enum.Enum):
     inne = "inne"
 
 
-
 class Lecturer(Base):
     __tablename__ = "lecturers"
 
     id = Column(Integer, primary_key=True, index=True)
-    abbreviation = Column(String, unique=True, nullable=False)  # "KaG"
+    abbreviation = Column(String, unique=True, nullable=False)
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
     email = Column(String, nullable=True)
-    room = Column(String, nullable=True)        # "pok. 215 bud. A"
+    room = Column(String, nullable=True)
     phone = Column(String, nullable=True)
-    office_hours = Column(String, nullable=True) # "wt 10:00-11:00"
+    office_hours = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     events = relationship("Event", back_populates="lecturer_obj")
+
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     telegram_chat_id = Column(String, unique=True, nullable=True)
-    whatsapp_number = Column(String, unique=True, nullable=True)
     email = Column(String, nullable=True)
     name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -55,7 +56,7 @@ class Schedule(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     users = relationship("User", back_populates="schedule")
-    events = relationship("Event", back_populates="schedule")
+    events = relationship("Event", back_populates="schedule", cascade="all, delete-orphan")
 
 
 class Event(Base):
@@ -69,13 +70,12 @@ class Event(Base):
     time_start = Column(String, nullable=True)
     time_end = Column(String, nullable=True)
     location = Column(String, nullable=True)
-    lecturer = Column(String, nullable=True)           # skrót — zostaje dla kompatybilności
-    lecturer_id = Column(Integer, ForeignKey("lecturers.id"), nullable=True)  # nowe
+    lecturer = Column(String, nullable=True)
+    lecturer_id = Column(Integer, ForeignKey("lecturers.id"), nullable=True)
     lecturer_obj = relationship("Lecturer", back_populates="events")
     notes = Column(String, nullable=True)
-    is_cancelled = Column(Boolean, default=False)
+    is_cancelled = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=True)
     schedule = relationship("Schedule", back_populates="events")
-
