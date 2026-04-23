@@ -186,7 +186,14 @@ async def import_ics(
             continue
 
         summary = summary_match.group(1).strip()
-        if "Wakacje" in summary or "test zdalny" in summary.lower():
+        summary_lower = summary.lower()
+        if (
+            "wakacje" in summary_lower
+            or "test zdalny" in summary_lower
+            or "dni świąteczne" in summary_lower
+            or "dni rektorskie" in summary_lower
+            or "dzień rektorski" in summary_lower
+        ):
             skipped += 1
             continue
 
